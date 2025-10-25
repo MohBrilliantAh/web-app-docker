@@ -1,108 +1,72 @@
 pipeline {
-    // Tentukan agent (Jenkins worker) yang memiliki akses ke Docker dan Docker Compose
     agent any
 
-    // Mendefinisikan environment variables yang akan digunakan di dalam pipeline
     environment {
-        // Nama image yang akan di-build, harus sesuai dengan docker-compose.yml
-        DOCKER_IMAGE = 'laravel-calculator-app' 
-        // Nama file compose
-        DOCKER_COMPOSE_FILE = 'docker-compose.yml'
+        CONTAINER_NAME = "laravel_app"
     }
 
     stages {
-        // ----------------------------------------------------------------------
-        // STAGE 1: BUILD IMAGE
-        // ----------------------------------------------------------------------
-        stage('Build Docker Image') {
+        stage('Checkout Code') {
             steps {
-                script {
-                    echo 'Membangun Docker Image untuk Aplikasi Laravel...'
-                    // Menggunakan Dockerfile yang sudah Anda buat
-                    // Tag image dengan nomor BUILD_ID Jenkins
-                    docker.build("${DOCKER_IMAGE}:${env.BUILD_ID}")
-                }
+                echo "🔄 Checkout source code dari repo kamu..."
+                git branch: 'main', url: 'https://github.com/MohBrilliantAh/web-app-docker'
             }
         }
 
-        // ----------------------------------------------------------------------
-        // STAGE 2: INSTALL DEPENDENCIES (Opsional, jika tidak dilakukan di Dockerfile)
-        // Karena kita sudah menginstal Composer di Dockerfile, stage ini lebih
-        // fokus pada testing/linting.
-        // ----------------------------------------------------------------------
-        stage('Testing & Linting') {
+        stage('Build Docker Images') {
             steps {
-                script {
-                    echo 'Menjalankan Composer Install di container sementara untuk testing...'
-                    // Jalankan Composer install dan testing di container sementara 
-                    // sebelum deployment final (praktik terbaik)
-                    sh "docker run --rm -v \$(pwd):/app -w /app composer install --no-dev --optimize-autoloader"
-                    
-                    // Contoh menjalankan test Laravel (jika ada unit test)
-                    // sh "docker run --rm -v \$(pwd):/var/www/html -w /var/www/html laravel-calculator-app php ./vendor/bin/phpunit"
-                }
+                echo "🏗  Build Docker images menggunakan docker-compose..."
+                bat 'docker-compose build'
             }
         }
 
-        // ----------------------------------------------------------------------
-        // STAGE 3: DEPLOY/RUN SERVICES
-        // ----------------------------------------------------------------------
-        stage('Deploy Services') {
+        stage('Run Docker Containers') {
             steps {
-                script {
-                    echo 'Menjalankan dan memperbarui services via Docker Compose...'
-                    // Menggunakan docker-compose untuk menjalankan semua service (app, web, db)
-                    // --detach: menjalankan di background
-                    // --build: memastikan image terbaru digunakan
-                    // --up: membuat/memulai container
-                    sh "docker-compose -f ${DOCKER_COMPOSE_FILE} up -d"
-                    
-                    echo 'Deployment Selesai. Aplikasi tersedia di http://localhost'
-                }
+                echo "🚀 Jalankan ulang container Laravel, Nginx, dan MySQL..."
+                bat '''
+                echo ==== HENTIKAN CONTAINER LAMA ====
+                docker stop laravel_app || echo "laravel_app tidak berjalan"
+                docker rm laravel_app || echo "laravel_app sudah dihapus"
+                docker stop nginx_server || echo "nginx_server tidak berjalan"
+                docker rm nginx_server || echo "nginx_server sudah dihapus"
+                docker stop mysql_db || echo "mysql_db tidak berjalan"
+                docker rm mysql_db || echo "mysql_db sudah dihapus"
+
+                echo ==== JALANKAN ULANG DOCKER COMPOSE ====
+                docker-compose down || exit 0
+                docker-compose up -d
+
+                echo ==== CEK CONTAINER YANG AKTIF ====
+                docker ps
+                '''
             }
         }
 
-        // ----------------------------------------------------------------------
-        // STAGE 4: POST-DEPLOYMENT (MIGRATION)
-        // Stage ini hanya relevan jika Anda memiliki database migration
-        // ----------------------------------------------------------------------
-        stage('Run Database Migration') {
+        stage('Verify Container Running') {
             steps {
-                script {
-                    echo 'Menjalankan Migrasi Database...'
-                    // Pastikan service 'app' sudah berjalan untuk menjalankan Artisan
-                    // exec -T menjalankan perintah di container app tanpa alokasi TTY
-                    sh "docker-compose exec -T app php artisan migrate --force"
-                }
-            }
-        }
-        
-        // ----------------------------------------------------------------------
-        // STAGE 5: CLEANUP
-        // Membersihkan image yang tidak digunakan untuk menghemat ruang disk
-        // ----------------------------------------------------------------------
-        stage('Cleanup') {
-            steps {
-                script {
-                    echo 'Membersihkan image dan container lama...'
-                    sh "docker system prune -f"
-                }
+                echo "🔍 Verifikasi Laravel container berjalan dengan benar..."
+                bat '''
+                echo ==== TUNGGU 20 DETIK SUPAYA CONTAINER SIAP ====
+                ping 127.0.0.1 -n 20 >nul
+
+                echo ==== CEK KONEKSI KE LARAVEL ====
+                curl -I http://127.0.0.1:8080 || echo "⚠ Gagal akses Laravel di port 8081"
+                
+                echo.
+                echo ==== ISI HALAMAN (HARUSNYA MUNCUL HALAMAN LARAVEL) ====
+                curl http://127.0.0.1:8080 || echo "⚠ Gagal ambil isi halaman"
+                echo ===============================
+                '''
             }
         }
     }
-    
-    // ----------------------------------------------------------------------
-    // POST: Tindakan setelah pipeline selesai (sukses atau gagal)
-    // ----------------------------------------------------------------------
+
     post {
-        always {
-            echo 'Pipeline Build Selesai.'
+        success {
+            echo '✅ Laravel berhasil dijalankan via Docker Compose di port 8081!'
         }
         failure {
-            echo 'Pipeline GAGAL! Periksa log build.'
-        }
-        success {
-            echo 'Pipeline BERHASIL! Aplikasi sudah running.'
+            echo '❌ Build gagal, cek log Jenkins console output.'
         }
     }
 }
